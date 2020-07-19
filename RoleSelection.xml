@@ -1,0 +1,939 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE nta PUBLIC '-//Uppaal Team//DTD Flat System 1.1//EN' 'http://www.it.uu.se/research/group/darts/uppaal/flat-1_2.dtd'>
+<nta>
+	<declaration>// Place global declarations here.
+const int NUMBER_OF_PROCESSES = 4;  
+typedef int[0,NUMBER_OF_PROCESSES-1] id_t;
+typedef int[1, NUMBER_OF_PROCESSES] prio_t;
+
+const int LARGEST_ID = NUMBER_OF_PROCESSES-1;
+const bool COM_ERRORS_ACTIVE = false;   
+const int ID_TO_GET_COM_FAILURE = 3;            //The process that get the communication error. Needs to be a process that become primary.
+const bool PASSON_ACTIVE = true;
+const bool PASSON_FAILURE_ACTIVE = false;
+clock gTakeoverTime;
+
+ 
+
+ 
+//Hearbeat message type
+typedef struct
+{
+  id_t src;
+  int  bs; //Become supervised
+  prio_t  prio;
+  prio_t tieBreaker;
+  bool isReveal;
+} hb_t;
+
+//For passing passover identity from role selection to failure detection
+int bsRsToFdArr[NUMBER_OF_PROCESSES];
+
+
+//Channels
+//Channel in terms of communication meen abstraction.
+broadcast chan CmdChTxEnterErr[NUMBER_OF_PROCESSES];
+broadcast chan CmdChTxEnterOK[NUMBER_OF_PROCESSES];
+broadcast chan CmdChRxEnterErr[NUMBER_OF_PROCESSES];
+broadcast chan CmdChRxEnterOK[NUMBER_OF_PROCESSES];
+broadcast chan CmdChSendHeartbeat[NUMBER_OF_PROCESSES];
+broadcast chan EvChRcvdHeartbeat[NUMBER_OF_PROCESSES];
+//For communicating between the two channel processes.
+broadcast chan heartbeatOnChannel[NUMBER_OF_PROCESSES];
+
+
+//Failure detector "message" channels
+broadcast chan heartbeat[NUMBER_OF_PROCESSES];
+
+//Failure detector commands channels
+broadcast chan CmdFdSupOther[NUMBER_OF_PROCESSES];
+broadcast chan CmdFdSupMe[NUMBER_OF_PROCESSES];
+broadcast chan CmdFdSupMeReveal[NUMBER_OF_PROCESSES];
+broadcast chan CmdFdPassOn[NUMBER_OF_PROCESSES];
+
+//Failure detector events
+broadcast chan EvFdSilence[NUMBER_OF_PROCESSES];
+broadcast chan EvFdReveal[NUMBER_OF_PROCESSES];
+broadcast chan EvFdReqToBeSupervised[NUMBER_OF_PROCESSES];
+broadcast chan EvFdHiPrio[NUMBER_OF_PROCESSES];
+broadcast chan EvFdLowPrio[NUMBER_OF_PROCESSES];
+
+//Role selection commands
+broadcast chan CmdRsPassOn[NUMBER_OF_PROCESSES];
+broadcast chan CmdRsBeBackup[NUMBER_OF_PROCESSES];
+broadcast chan CmdRsNBackup[NUMBER_OF_PROCESSES];
+
+//Role selection events
+broadcast chan EvRsPrimary[NUMBER_OF_PROCESSES];
+broadcast chan EvRsBackup[NUMBER_OF_PROCESSES];
+
+
+
+//Message instanceses
+hb_t fdHbTx[NUMBER_OF_PROCESSES];
+hb_t fdHbRx[NUMBER_OF_PROCESSES];
+
+void SetFdTxHbMessage(const id_t src, const int bs, const prio_t prio, const prio_t tieBreaker, const bool isReveal)
+{
+    fdHbTx[src].src = src;
+    fdHbTx[src].bs = bs;
+    fdHbTx[src].prio = prio;
+    fdHbTx[src].tieBreaker = tieBreaker;
+    fdHbTx[src].isReveal = isReveal;
+}
+
+void SetFdRxHbMessage(const id_t src, const int bs, const prio_t prio, const prio_t tieBreaker, const bool isReveal)
+{
+    fdHbRx[src].src = src;
+    fdHbRx[src].bs = bs;
+    fdHbRx[src].prio = prio;
+    fdHbRx[src].tieBreaker = tieBreaker;
+    fdHbRx[src].isReveal = isReveal;
+}
+
+
+
+</declaration>
+	<template>
+		<name>UsingService</name>
+		<parameter>const id_t id</parameter>
+		<declaration>
+clock x;
+//startup delay that makes the highest priority process startup first
+//const int startupDelay =  4 *(NUMBER_OF_PROCESSES - id);
+//startup delay that makes the lowest priority process startup first
+const int startupDelay = 2 + (4 * id);
+
+//startup at same time
+//const int startupDelay =  1;
+
+int validPassoverCnt = 0;
+int invalidPassoverCnt = 0;
+bool isToMakeInvalidPassOver = false;
+bool isComFailure = COM_ERRORS_ACTIVE;
+
+bool IsComFailure()
+{
+  if(COM_ERRORS_ACTIVE &amp;&amp; ID_TO_GET_COM_FAILURE == id)
+  {
+    return isComFailure; 
+  }
+  else
+  {
+    return false;
+  }
+}
+
+
+void ToogleComFailure()
+{
+    if(COM_ERRORS_ACTIVE &amp;&amp; PASSON_ACTIVE)  //PASSON_ACTIVE to avoid getting stuck in primary state. 
+    {
+        isComFailure = !isComFailure;
+    }
+}
+
+
+void MakePassoverToRandomInclInvalid()
+{
+    int nextPrimaryProcessId = ((id + 1) % (NUMBER_OF_PROCESSES)) + 1;
+
+    if(isToMakeInvalidPassOver &amp;&amp; PASSON_FAILURE_ACTIVE)
+    {
+         nextPrimaryProcessId = 202; //Just and invalid number...
+    }
+    isToMakeInvalidPassOver = !isToMakeInvalidPassOver;
+    //Global declared array that holds the ID of the process to passover to. 
+    bsRsToFdArr[id] = nextPrimaryProcessId;
+}
+
+</declaration>
+		<location id="id0" x="-867" y="-374">
+			<name x="-877" y="-408">Idle</name>
+			<label kind="invariant" x="-901" y="-357">x &lt;= startupDelay</label>
+		</location>
+		<location id="id1" x="-646" y="-374">
+			<name x="-663" y="-408">Backup</name>
+		</location>
+		<location id="id2" x="-646" y="-204">
+			<name x="-722" y="-221">Primary</name>
+			<label kind="invariant" x="-833" y="-238">x &lt; 20 || (!IsComFailure() &amp;&amp; !PASSON_ACTIVE)</label>
+		</location>
+		<location id="id3" x="-646" y="25">
+			<name x="-731" y="34">PrimaryWithTxComFailure</name>
+			<label kind="invariant" x="-663" y="-9">x &lt; 10</label>
+		</location>
+		<location id="id4" x="-646" y="-280">
+			<name x="-629" y="-288">PrimaryU_</name>
+			<urgent/>
+		</location>
+		<location id="id5" x="-306" y="-323">
+			<name x="-316" y="-357">Passover</name>
+			<label kind="invariant" x="-316" y="-306">x &lt;= 4</label>
+		</location>
+		<location id="id6" x="-867" y="25">
+			<committed/>
+		</location>
+		<init ref="id0"/>
+		<transition>
+			<source ref="id6"/>
+			<target ref="id1"/>
+			<label kind="synchronisation" x="-1011" y="-170">CmdChTxEnterOK[id]!</label>
+			<nail x="-867" y="-221"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id6"/>
+			<label kind="synchronisation" x="-824" y="0">EvRsBackup[id]?</label>
+			<label kind="assignment" x="-849" y="25">x = 0</label>
+		</transition>
+		<transition>
+			<source ref="id5"/>
+			<target ref="id1"/>
+			<label kind="guard" x="-340" y="-399">x&gt;=4</label>
+			<nail x="-307" y="-374"/>
+		</transition>
+		<transition>
+			<source ref="id4"/>
+			<target ref="id2"/>
+			<label kind="assignment" x="-697" y="-263">gTakeoverTime = 0</label>
+			<nail x="-646" y="-221"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id2"/>
+			<label kind="guard" x="-662" y="-186">x &gt; 5</label>
+			<label kind="synchronisation" x="-696" y="-169">CmdChTxEnterOK[id]!</label>
+			<label kind="assignment" x="-679" y="-152">ToogleComFailure(),
+x = 0</label>
+			<nail x="-646" y="8"/>
+			<nail x="-646" y="0"/>
+			<nail x="-646" y="-187"/>
+		</transition>
+		<transition>
+			<source ref="id2"/>
+			<target ref="id3"/>
+			<label kind="guard" x="-544" y="-127">x &gt; 10 &amp;&amp; IsComFailure()</label>
+			<label kind="synchronisation" x="-552" y="-110">CmdChTxEnterErr[id]!</label>
+			<label kind="assignment" x="-535" y="-93">x = 0,
+gTakeoverTime = 0</label>
+			<nail x="-510" y="-204"/>
+			<nail x="-510" y="25"/>
+		</transition>
+		<transition>
+			<source ref="id2"/>
+			<target ref="id5"/>
+			<label kind="guard" x="-408" y="-280">x &gt; 5 &amp;&amp; !IsComFailure() &amp;&amp; PASSON_ACTIVE</label>
+			<label kind="synchronisation" x="-348" y="-263">CmdRsPassOn[id]!</label>
+			<label kind="assignment" x="-365" y="-246">MakePassoverToRandomInclInvalid(),
+gTakeoverTime = 0,
+x = 0</label>
+			<nail x="-306" y="-204"/>
+			<nail x="-306" y="-204"/>
+		</transition>
+		<transition>
+			<source ref="id2"/>
+			<target ref="id1"/>
+			<label kind="synchronisation" x="-561" y="-306">EvRsBackup[id]?</label>
+			<nail x="-510" y="-204"/>
+			<nail x="-510" y="-374"/>
+		</transition>
+		<transition>
+			<source ref="id1"/>
+			<target ref="id4"/>
+			<label kind="synchronisation" x="-680" y="-348">EvRsPrimary[id]?</label>
+			<label kind="assignment" x="-654" y="-331">x = 0</label>
+		</transition>
+		<transition>
+			<source ref="id0"/>
+			<target ref="id1"/>
+			<label kind="guard" x="-816" y="-416">x &gt;= startupDelay</label>
+			<label kind="synchronisation" x="-824" y="-399">CmdRsBeBackup[id]!</label>
+		</transition>
+	</template>
+	<template>
+		<name>RoleSelection</name>
+		<parameter>const id_t id</parameter>
+		<declaration>clock x;
+
+const int PROSPECT_TMO = 2;</declaration>
+		<location id="id7" x="-654" y="-442">
+			<name x="-671" y="-493">Idle</name>
+			<label kind="invariant" x="-680" y="-476">x &lt;= 0</label>
+		</location>
+		<location id="id8" x="-374" y="-442">
+			<name x="-384" y="-476">Synchronizing</name>
+		</location>
+		<location id="id9" x="-374" y="-204">
+			<name x="-365" y="-229">Backup</name>
+		</location>
+		<location id="id10" x="-374" y="34">
+			<name x="-384" y="0">Prospect</name>
+			<label kind="invariant" x="-442" y="51">x &lt;= PROSPECT_TMO</label>
+		</location>
+		<location id="id11" x="68" y="-204">
+			<name x="58" y="-238">Primary</name>
+		</location>
+		<location id="id12" x="-612" y="-110">
+			<committed/>
+		</location>
+		<location id="id13" x="-714" y="-110">
+			<committed/>
+		</location>
+		<location id="id14" x="-510" y="-110">
+			<committed/>
+		</location>
+		<location id="id15" x="-59" y="-306">
+			<committed/>
+		</location>
+		<location id="id16" x="-76" y="-204">
+			<committed/>
+		</location>
+		<location id="id17" x="-374" y="-272">
+			<committed/>
+		</location>
+		<location id="id18" x="-76" y="-136">
+			<committed/>
+		</location>
+		<location id="id19" x="-374" y="-365">
+			<committed/>
+		</location>
+		<init ref="id7"/>
+		<transition>
+			<source ref="id8"/>
+			<target ref="id19"/>
+			<label kind="synchronisation" x="-374" y="-416">CmdRsBeBackup[id]?</label>
+		</transition>
+		<transition>
+			<source ref="id18"/>
+			<target ref="id9"/>
+			<label kind="synchronisation" x="-229" y="-161">EvRsBackup[id]!</label>
+			<nail x="-238" y="-136"/>
+			<nail x="-238" y="-204"/>
+		</transition>
+		<transition>
+			<source ref="id16"/>
+			<target ref="id18"/>
+			<label kind="synchronisation" x="-136" y="-187">CmdFdPassOn[id]!</label>
+		</transition>
+		<transition>
+			<source ref="id17"/>
+			<target ref="id9"/>
+			<label kind="synchronisation" x="-399" y="-263">EvRsBackup[id]!</label>
+		</transition>
+		<transition>
+			<source ref="id15"/>
+			<target ref="id9"/>
+			<label kind="synchronisation" x="-195" y="-331">EvRsBackup[id]!</label>
+			<nail x="-238" y="-306"/>
+			<nail x="-238" y="-204"/>
+		</transition>
+		<transition>
+			<source ref="id11"/>
+			<target ref="id16"/>
+			<label kind="synchronisation" x="-68" y="-229">CmdRsPassOn[id]?</label>
+		</transition>
+		<transition>
+			<source ref="id11"/>
+			<target ref="id15"/>
+			<label kind="synchronisation" x="-34" y="-331">EvFdHiPrio[id]?</label>
+			<nail x="68" y="-306"/>
+			<nail x="-42" y="-306"/>
+		</transition>
+		<transition>
+			<source ref="id14"/>
+			<target ref="id10"/>
+			<label kind="synchronisation" x="-569" y="-51">CmdFdSupMe[id]!</label>
+			<label kind="assignment" x="-527" y="-34">x = 0</label>
+			<nail x="-510" y="34"/>
+		</transition>
+		<transition>
+			<source ref="id12"/>
+			<target ref="id10"/>
+			<label kind="synchronisation" x="-688" y="-102">CmdFdSupMeReveal[id]!</label>
+			<label kind="assignment" x="-671" y="-85">x = 0</label>
+			<nail x="-612" y="34"/>
+		</transition>
+		<transition>
+			<source ref="id13"/>
+			<target ref="id10"/>
+			<label kind="synchronisation" x="-841" y="-59">CmdFdSupMeReveal[id]!</label>
+			<label kind="assignment" x="-765" y="-34">x = 0</label>
+			<nail x="-714" y="34"/>
+		</transition>
+		<transition>
+			<source ref="id9"/>
+			<target ref="id14"/>
+			<label kind="synchronisation" x="-586" y="-161">EvFdReqToBeSupervised[id]?</label>
+			<nail x="-510" y="-204"/>
+		</transition>
+		<transition>
+			<source ref="id9"/>
+			<target ref="id12"/>
+			<label kind="synchronisation" x="-671" y="-178">EvFdReveal[id]?</label>
+			<nail x="-612" y="-204"/>
+		</transition>
+		<transition>
+			<source ref="id9"/>
+			<target ref="id13"/>
+			<label kind="synchronisation" x="-799" y="-178">EvFdSilence[id]?</label>
+			<nail x="-714" y="-204"/>
+		</transition>
+		<transition>
+			<source ref="id10"/>
+			<target ref="id11"/>
+			<label kind="guard" x="-246" y="17">x &gt;= PROSPECT_TMO</label>
+			<label kind="synchronisation" x="-263" y="0">EvRsPrimary[id]!</label>
+			<label kind="assignment" x="-356" y="34">x = 0</label>
+			<nail x="68" y="34"/>
+		</transition>
+		<transition>
+			<source ref="id10"/>
+			<target ref="id9"/>
+			<label kind="synchronisation" x="-391" y="-110">EvFdHiPrio[id]?</label>
+		</transition>
+		<transition>
+			<source ref="id19"/>
+			<target ref="id17"/>
+			<label kind="synchronisation" x="-408" y="-323">CmdFdSupOther[id]!</label>
+		</transition>
+		<transition>
+			<source ref="id9"/>
+			<target ref="id8"/>
+			<label kind="synchronisation" x="-569" y="-289">CmdRsNBackup[id]?</label>
+			<label kind="assignment" x="-518" y="-272">x = 0</label>
+			<nail x="-510" y="-204"/>
+			<nail x="-510" y="-442"/>
+		</transition>
+		<transition>
+			<source ref="id7"/>
+			<target ref="id8"/>
+			<label kind="assignment" x="-636" y="-442">x = 0</label>
+		</transition>
+	</template>
+	<template>
+		<name x="5" y="5">FailureDetector</name>
+		<parameter>const id_t id</parameter>
+		<declaration>// Place local declarations here.
+clock x;
+
+const prio_t prio = id + 1;
+const prio_t tieBreak = prio;
+const int HB_MISSING_MAX = 2;
+
+
+//typedef int[id, highId] high_sel_t;
+
+
+
+int hbMissing = 0;
+
+id_t idOfSender;
+
+hb_t lclHbBuf;
+
+
+
+void GetHbData()
+{
+    lclHbBuf = fdHbRx[id];
+}
+
+bool IsPassoverToMe()
+{
+  bool isPassoverToMe = false;
+  if(fdHbRx[id].bs &gt; 0)
+  {
+      isPassoverToMe = ((lclHbBuf.bs - 1) == id);
+  }
+  return isPassoverToMe;
+}
+
+bool IsHbInRxFromHigherPrio()
+{
+   return  ((prio &lt; lclHbBuf.prio) || (prio == lclHbBuf.prio &amp;&amp; tieBreak &lt; lclHbBuf.tieBreaker));
+}
+
+
+bool IsRevealReqFromLowerPrio()
+{
+  bool isRevealReqFromLowerPrio = false;
+  if(lclHbBuf.isReveal)
+  {
+      isRevealReqFromLowerPrio = !IsHbInRxFromHigherPrio();
+  }
+  return isRevealReqFromLowerPrio;
+}
+
+
+bool IsTimeout()
+{
+    return (hbMissing &gt;= HB_MISSING_MAX);
+}
+
+
+bool IsRevealReq()
+{
+    return IsRevealReqFromLowerPrio();
+}
+
+bool IsPassover()
+{
+    return IsPassoverToMe();
+}
+
+bool IsHbFromHigherPrio()
+{
+    return IsHbInRxFromHigherPrio();
+}
+
+void PutHbOnCh()
+{
+    SetFdTxHbMessage(id,0,prio,tieBreak,false);
+}
+
+void PutRevealHbOnCh()
+{
+    SetFdTxHbMessage(id,0,prio,tieBreak,true);
+}
+
+void PutPassoverHbOnCh(const int passoverTo)
+{
+    SetFdTxHbMessage(id,passoverTo,prio,tieBreak,false);
+}
+
+void PutPassOverHbOnChUseRsId()
+{
+    PutPassoverHbOnCh(bsRsToFdArr[id]);
+
+}
+
+
+
+
+
+
+
+</declaration>
+		<location id="id20" x="-850" y="-688">
+			<name x="-860" y="-722">Idle</name>
+		</location>
+		<location id="id21" x="-850" y="-476">
+			<name x="-884" y="-510">BeaterOK</name>
+			<label kind="invariant" x="-867" y="-459">x &lt;= 1</label>
+		</location>
+		<location id="id22" x="-850" y="-68">
+			<name x="-909" y="-51">BeaterSuspected</name>
+		</location>
+		<location id="id23" x="-170" y="-476">
+			<name x="-204" y="-510">Heartbeating</name>
+			<label kind="invariant" x="-153" y="-493">x &lt;= 1</label>
+		</location>
+		<location id="id24" x="-850" y="-204">
+			<name x="-892" y="-246">BeaterSuspectedC_</name>
+			<committed/>
+		</location>
+		<location id="id25" x="-170" y="-144">
+			<committed/>
+		</location>
+		<location id="id26" x="-374" y="-646">
+			<name x="-365" y="-671">HbRcvC_</name>
+			<committed/>
+		</location>
+		<location id="id27" x="-306" y="-476">
+			<committed/>
+		</location>
+		<location id="id28" x="-1156" y="-340">
+			<committed/>
+		</location>
+		<location id="id29" x="-850" y="-340">
+			<committed/>
+		</location>
+		<init ref="id20"/>
+		<transition>
+			<source ref="id29"/>
+			<target ref="id21"/>
+			<label kind="guard" x="-790" y="-365">!IsTimeout()</label>
+			<nail x="-680" y="-340"/>
+			<nail x="-680" y="-476"/>
+		</transition>
+		<transition>
+			<source ref="id29"/>
+			<target ref="id24"/>
+			<label kind="guard" x="-884" y="-297">IsTimeout()</label>
+			<nail x="-850" y="-272"/>
+			<nail x="-850" y="-255"/>
+			<nail x="-850" y="-246"/>
+		</transition>
+		<transition>
+			<source ref="id28"/>
+			<target ref="id21"/>
+			<label kind="guard" x="-1122" y="-365">!IsRevealReq() &amp;&amp; !IsPassover()</label>
+			<nail x="-977" y="-340"/>
+		</transition>
+		<transition>
+			<source ref="id28"/>
+			<target ref="id24"/>
+			<label kind="guard" x="-1317" y="-255">IsRevealReq() || IsPassover()</label>
+			<nail x="-1156" y="-238"/>
+			<nail x="-918" y="-238"/>
+		</transition>
+		<transition>
+			<source ref="id27"/>
+			<target ref="id21"/>
+			<label kind="synchronisation" x="-484" y="-467">heartbeatOnChannel[id]!</label>
+			<label kind="assignment" x="-450" y="-450">x = 0</label>
+			<nail x="-510" y="-476"/>
+		</transition>
+		<transition>
+			<source ref="id23"/>
+			<target ref="id27"/>
+			<label kind="synchronisation" x="-306" y="-459">CmdFdPassOn[id]?</label>
+			<label kind="assignment" x="-357" y="-442">PutPassOverHbOnChUseRsId()</label>
+		</transition>
+		<transition>
+			<source ref="id26"/>
+			<target ref="id23"/>
+			<label kind="guard" x="-425" y="-612">!IsHbFromHigherPrio()</label>
+			<label kind="synchronisation" x="-416" y="-595">EvFdLowPrio[id]!</label>
+			<nail x="-374" y="-586"/>
+			<nail x="-374" y="-544"/>
+			<nail x="-246" y="-501"/>
+		</transition>
+		<transition>
+			<source ref="id26"/>
+			<target ref="id21"/>
+			<label kind="guard" x="-535" y="-688">IsHbFromHigherPrio()</label>
+			<label kind="synchronisation" x="-518" y="-671">EvFdHiPrio[id]!</label>
+			<nail x="-510" y="-646"/>
+			<nail x="-510" y="-476"/>
+		</transition>
+		<transition>
+			<source ref="id23"/>
+			<target ref="id26"/>
+			<label kind="synchronisation" x="-280" y="-680">EvChRcvdHeartbeat[id]?</label>
+			<label kind="assignment" x="-238" y="-663">GetHbData()</label>
+			<nail x="-170" y="-646"/>
+			<nail x="-332" y="-646"/>
+		</transition>
+		<transition>
+			<source ref="id23"/>
+			<target ref="id23"/>
+			<label kind="guard" x="-51" y="-595">x &lt;= 1</label>
+			<label kind="synchronisation" x="-68" y="-578">CmdChSendHeartbeat[id]!</label>
+			<label kind="assignment" x="-51" y="-552">x = 0,
+PutHbOnCh()</label>
+			<nail x="-68" y="-621"/>
+			<nail x="-68" y="-349"/>
+		</transition>
+		<transition>
+			<source ref="id25"/>
+			<target ref="id23"/>
+			<label kind="synchronisation" x="-170" y="-246">CmdChSendHeartbeat[id]!</label>
+			<label kind="assignment" x="-170" y="-221">x = 0,
+hbMissing=0</label>
+			<nail x="-170" y="-365"/>
+			<nail x="-170" y="-374"/>
+		</transition>
+		<transition>
+			<source ref="id22"/>
+			<target ref="id25"/>
+			<label kind="synchronisation" x="-544" y="119">CmdFdSupMeReveal[id]?</label>
+			<label kind="assignment" x="-544" y="144">PutRevealHbOnCh()</label>
+			<nail x="-850" y="136"/>
+			<nail x="-170" y="136"/>
+			<nail x="-170" y="-119"/>
+		</transition>
+		<transition>
+			<source ref="id22"/>
+			<target ref="id25"/>
+			<label kind="synchronisation" x="-518" y="51">CmdFdSupMe[id]?</label>
+			<label kind="assignment" x="-510" y="68">PutHbOnCh()</label>
+			<nail x="-850" y="68"/>
+			<nail x="-170" y="68"/>
+		</transition>
+		<transition>
+			<source ref="id22"/>
+			<target ref="id21"/>
+			<label kind="synchronisation" x="-671" y="-25">CmdFdSupOther[id]?</label>
+			<label kind="assignment" x="-654" y="0">x = 0,
+hbMissing = 0</label>
+			<nail x="-850" y="0"/>
+			<nail x="-510" y="0"/>
+			<nail x="-510" y="-476"/>
+		</transition>
+		<transition>
+			<source ref="id24"/>
+			<target ref="id22"/>
+			<label kind="guard" x="-739" y="-153">IsPassover()</label>
+			<label kind="synchronisation" x="-773" y="-119">EvFdReqToBeSupervised[id]!</label>
+			<nail x="-714" y="-204"/>
+			<nail x="-714" y="-68"/>
+		</transition>
+		<transition>
+			<source ref="id24"/>
+			<target ref="id22"/>
+			<label kind="guard" x="-884" y="-178">IsRevealReq()</label>
+			<label kind="synchronisation" x="-884" y="-161">EvFdReveal[id]!</label>
+		</transition>
+		<transition>
+			<source ref="id24"/>
+			<target ref="id22"/>
+			<label kind="guard" x="-1020" y="-178">IsTimeout()</label>
+			<label kind="synchronisation" x="-1045" y="-153">EvFdSilence[id]!</label>
+			<nail x="-986" y="-204"/>
+			<nail x="-986" y="-68"/>
+		</transition>
+		<transition>
+			<source ref="id21"/>
+			<target ref="id29"/>
+			<label kind="guard" x="-867" y="-425">x&gt;=1</label>
+			<label kind="assignment" x="-867" y="-408">hbMissing++,
+x = 0</label>
+			<nail x="-850" y="-382"/>
+			<nail x="-850" y="-382"/>
+			<nail x="-850" y="-382"/>
+			<nail x="-850" y="-382"/>
+		</transition>
+		<transition>
+			<source ref="id21"/>
+			<target ref="id28"/>
+			<label kind="synchronisation" x="-1139" y="-501">EvChRcvdHeartbeat[id]?</label>
+			<label kind="assignment" x="-1122" y="-476">hbMissing = 0,
+x = 0,
+GetHbData()</label>
+			<nail x="-1156" y="-476"/>
+			<nail x="-1156" y="-476"/>
+		</transition>
+		<transition>
+			<source ref="id20"/>
+			<target ref="id21"/>
+			<label kind="synchronisation" x="-892" y="-620">CmdFdSupOther[id]?</label>
+			<label kind="assignment" x="-858" y="-595">x = 0</label>
+			<nail x="-850" y="-493"/>
+		</transition>
+	</template>
+	<template>
+		<name>ComChannelTx</name>
+		<parameter>const id_t id</parameter>
+		<declaration>
+
+</declaration>
+		<location id="id30" x="-782" y="-510">
+			<name x="-773" y="-544">OK</name>
+		</location>
+		<location id="id31" x="-620" y="-510">
+			<name x="-612" y="-536">OK_</name>
+			<committed/>
+		</location>
+		<location id="id32" x="-918" y="-510">
+			<name x="-969" y="-527">Error</name>
+		</location>
+		<init ref="id30"/>
+		<transition>
+			<source ref="id32"/>
+			<target ref="id30"/>
+			<label kind="synchronisation" x="-977" y="-408">CmdChTxEnterOK[id]?</label>
+			<nail x="-918" y="-408"/>
+			<nail x="-918" y="-408"/>
+			<nail x="-790" y="-493"/>
+			<nail x="-799" y="-485"/>
+		</transition>
+		<transition>
+			<source ref="id30"/>
+			<target ref="id32"/>
+			<label kind="synchronisation" x="-977" y="-629">CmdChTxEnterErr[id]?</label>
+			<nail x="-918" y="-612"/>
+			<nail x="-918" y="-603"/>
+			<nail x="-918" y="-603"/>
+		</transition>
+		<transition>
+			<source ref="id31"/>
+			<target ref="id30"/>
+			<label kind="synchronisation" x="-765" y="-637">heartbeatOnChannel[id]!</label>
+			<nail x="-620" y="-612"/>
+			<nail x="-782" y="-612"/>
+		</transition>
+		<transition>
+			<source ref="id30"/>
+			<target ref="id31"/>
+			<label kind="synchronisation" x="-775" y="-409">CmdChSendHeartbeat[id]?</label>
+			<nail x="-782" y="-409"/>
+			<nail x="-620" y="-408"/>
+		</transition>
+	</template>
+	<template>
+		<name>ComChannelRx</name>
+		<parameter>const id_t id</parameter>
+		<declaration>void GetSenderTxToFdRx(const id_t senderId)
+{
+    fdHbRx[id] = fdHbTx[senderId];
+}</declaration>
+		<location id="id33" x="-850" y="-391">
+			<name x="-833" y="-399">OK</name>
+		</location>
+		<location id="id34" x="-714" y="-391">
+			<name x="-724" y="-425">OK_</name>
+			<committed/>
+		</location>
+		<location id="id35" x="-986" y="-391">
+			<name x="-1037" y="-399">Error</name>
+		</location>
+		<init ref="id33"/>
+		<transition>
+			<source ref="id35"/>
+			<target ref="id33"/>
+			<label kind="synchronisation" x="-1045" y="-272">CmdChRxEnterOK[id]?</label>
+			<nail x="-987" y="-272"/>
+		</transition>
+		<transition>
+			<source ref="id33"/>
+			<target ref="id35"/>
+			<label kind="synchronisation" x="-1054" y="-527">CmdChRxEnterErr[id]?</label>
+			<nail x="-986" y="-510"/>
+		</transition>
+		<transition>
+			<source ref="id34"/>
+			<target ref="id33"/>
+			<label kind="synchronisation" x="-850" y="-518">EvChRcvdHeartbeat[id]!</label>
+			<nail x="-714" y="-493"/>
+			<nail x="-850" y="-493"/>
+		</transition>
+		<transition>
+			<source ref="id33"/>
+			<target ref="id34"/>
+			<label kind="select" x="-833" y="-238">otherSender : id_t</label>
+			<label kind="guard" x="-833" y="-255">otherSender != id</label>
+			<label kind="synchronisation" x="-850" y="-272">heartbeatOnChannel[otherSender]?</label>
+			<label kind="assignment" x="-875" y="-221">GetSenderTxToFdRx(otherSender)</label>
+			<nail x="-850" y="-272"/>
+			<nail x="-714" y="-272"/>
+			<nail x="-714" y="-357"/>
+		</transition>
+	</template>
+	<system>// Place template instantiations here.
+//Process = Template();
+// List one or more processes to be composed into a system.
+
+
+
+
+
+//fdArr {FailureDetector(0,1,101),FailureDetector(1,2,202),FailureDetector(2,3,303)}
+
+
+system ComChannelRx,ComChannelTx,FailureDetector,RoleSelection, UsingService;
+
+gantt {
+  CommError(i:id_t): 
+    ComChannelRx(i).Error -&gt; 0,
+    ComChannelRx(i).OK -&gt; 1,
+    ComChannelRx(i).OK_ -&gt;1;
+
+  CommError(i:id_t): 
+    ComChannelTx(i).Error -&gt; 0,
+    ComChannelTx(i).OK -&gt; 1,
+    ComChannelTx(i).OK_ -&gt;1;
+    
+     
+  UsingService(i:id_t): 
+     //Train(i).Safe -&gt; 3, // violet, or omit for white
+     UsingService(i).Primary -&gt; 1, 
+     UsingService(i).Backup -&gt; 2,
+     UsingService(i).PrimaryWithTxComFailure -&gt; 3;
+}</system>
+	<queries>
+		<query>
+			<formula>A[] not deadlock</formula>
+			<comment></comment>
+		</query>
+		<query>
+			<formula>Pr[&lt;=100] (&lt;&gt;UsingService(2).Primary) </formula>
+			<comment></comment>
+		</query>
+		<query>
+			<formula>E&lt;&gt; (UsingService(3).Primary) </formula>
+			<comment></comment>
+		</query>
+		<query>
+			<formula>A[] (!UsingService(1).Primary) </formula>
+			<comment></comment>
+		</query>
+		<query>
+			<formula>A[] (!UsingService(2).Primary) </formula>
+			<comment></comment>
+		</query>
+		<query>
+			<formula>E&lt;&gt; (UsingService(0).Primary) </formula>
+			<comment></comment>
+		</query>
+		<query>
+			<formula>A[] ((!UsingService(0).Primary) &amp;&amp; (!UsingService(1).Primary) &amp;&amp; (!UsingService(2).Primary))</formula>
+			<comment></comment>
+		</query>
+		<query>
+			<formula>A[] ((not UsingService(1).Primary) &amp;&amp; (not UsingService(2).Primary) &amp;&amp; (not UsingService(3).Primary))</formula>
+			<comment></comment>
+		</query>
+		<query>
+			<formula>A[] (!UsingService(0).Primary || !UsingService(1).Primary || !UsingService(2).Primary)</formula>
+			<comment></comment>
+		</query>
+		<query>
+			<formula>E&lt;&gt; UsingService(3).Primary  </formula>
+			<comment></comment>
+		</query>
+		<query>
+			<formula>E&lt;&gt; RoleSelection(LARGEST_ID).Primary  </formula>
+			<comment></comment>
+		</query>
+		<query>
+			<formula>A[] forall(i : id_t) forall(j : id_t) UsingService(i).Primary &amp;&amp; UsingService(j).Primary imply i==j</formula>
+			<comment></comment>
+		</query>
+		<query>
+			<formula>A[] forall(i : id_t) forall(j : id_t) (!COM_ERRORS_ACTIVE) &amp;&amp; RoleSelection(i).Primary &amp;&amp; RoleSelection(j).Primary imply i==j</formula>
+			<comment></comment>
+		</query>
+		<query>
+			<formula>simulate [&lt;=100] {UsingService(0).Primary,UsingService(1).Primary,UsingService(2).Primary, UsingService(3).Primary }</formula>
+			<comment></comment>
+		</query>
+		<query>
+			<formula>simulate [&lt;=200] {FailureDetector(LARGEST_ID).x, FailureDetector(LARGEST_ID).Heartbeating}</formula>
+			<comment></comment>
+		</query>
+		<query>
+			<formula>A[] forall(i : id_t) forall(j : id_t) UsingService(i).Primary &amp;&amp; UsingService(j).Primary imply i==j</formula>
+			<comment></comment>
+		</query>
+		<query>
+			<formula>E&lt;&gt; (!COM_ERRORS_ACTIVE) || (UsingService(LARGEST_ID).PrimaryWithComFailure &amp;&amp; UsingService(LARGEST_ID-1).Primary)</formula>
+			<comment>When there is commmunication error, the second largest process id will take over. </comment>
+		</query>
+		<query>
+			<formula>sup{UsingService(0).Passover &amp;&amp; UsingService(1).PrimaryU_}: gTakeoverTime</formula>
+			<comment>Largest takeover time when passing the primary role to a new process.</comment>
+		</query>
+		<query>
+			<formula>inf{UsingService(0).Passover &amp;&amp; UsingService(1).PrimaryU_}: gTakeoverTime</formula>
+			<comment>Smallest takeover time when passing the primary role to another process.</comment>
+		</query>
+		<query>
+			<formula>sup{UsingService(LARGEST_ID).PrimaryWithTxComFailure &amp;&amp; FailureDetector(LARGEST_ID - 1).BeaterSuspectedC_}: gTakeoverTime</formula>
+			<comment>Maximum time from communication failure until the beater is suspected. </comment>
+		</query>
+		<query>
+			<formula>inf{UsingService(LARGEST_ID).PrimaryWithTxComFailure &amp;&amp; FailureDetector(LARGEST_ID - 1).BeaterSuspectedC_}: gTakeoverTime</formula>
+			<comment>Minimum time from the communication failure to the beater is suspected. </comment>
+		</query>
+		<query>
+			<formula>sup{(UsingService(LARGEST_ID).PrimaryWithTxComFailure || UsingService(LARGEST_ID).Backup) &amp;&amp; UsingService(LARGEST_ID - 1).PrimaryU_}: gTakeoverTime</formula>
+			<comment>Largest takeover time due to communication failure</comment>
+		</query>
+		<query>
+			<formula>inf{(UsingService(LARGEST_ID).PrimaryWithTxComFailure || UsingService(LARGEST_ID).Backup) &amp;&amp; UsingService(LARGEST_ID - 1).PrimaryU_}: gTakeoverTime</formula>
+			<comment></comment>
+		</query>
+	</queries>
+</nta>
